@@ -1,7 +1,7 @@
 # Crashing CLI
 Simple CLI application to troubleshoot function entry resolution.
 
-Without tinyinst:
+## Without TinyInst
 ```
 # crashing_cli.exe
 main: 00007FF716BA2729
@@ -73,6 +73,7 @@ Callstack:
 	SymFunctionTableAccess64 (0x7ffa6b342651) @ 00000208A0AFE848 -> 0x52630 - 0x52679: 146630 (146630)
 ```
 
+## With TinyInst
 ```
 # litecov.exe -generate_unwind -full_address_map -instrument_module crashing_cli.exe -generate-unwind -- C:\Users\wizche\CLionProjects\crashing-cli\cmake-build-debug\crashing_cli.exe
 main: 00007FF716B70C79
