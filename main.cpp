@@ -7,6 +7,8 @@
 #include <vector>
 #include <Zydis/Zydis.h>
 
+#define PE_IMAGE_UWP_EPILOG_AT_THE_END		1
+
 #pragma comment (lib, "dbgeng")
 #pragma comment(lib, "dbghelp.lib")
 #pragma intrinsic(_ReturnAddress)
@@ -18,6 +20,7 @@ typedef enum _UNWIND_OP_CODES {
   UWOP_SET_FPREG,       /* no info, FP = RSP + UNWIND_INFO.FPRegOffset*16 */
   UWOP_SAVE_NONVOL,     /* info == register number, offset in next slot */
   UWOP_SAVE_NONVOL_FAR, /* info == register number, offset in next 2 slots */
+  UWOP_EPILOG, // only on version 2
   UWOP_SAVE_XMM128 = 8, /* info == XMM reg number, offset in next slot */
   UWOP_SAVE_XMM128_FAR, /* info == XMM reg number, offset in next 2 slots */
   UWOP_PUSH_MACHFRAME   /* info == 0: no error-code, 1: error-code */
@@ -27,9 +30,9 @@ typedef unsigned char UBYTE;
 
 typedef union _UNWIND_CODE {
   struct {
-    UBYTE CodeOffset;
+    UBYTE CodeOffset_OffsetLowOrSize;
     UBYTE UnwindOp: 4;
-    UBYTE OpInfo: 4;
+    UBYTE OpInfo_OffsetHighOrFlags: 4;
   };
   USHORT FrameOffset;
 } UNWIND_CODE, *PUNWIND_CODE;
@@ -105,6 +108,34 @@ void DecodeAndPrint(ZyanU8 *data, ZyanUSize length) {
     runtime_address += instruction.length;
   }
 }
+size_t GetEpilogueSize(UNWIND_INFO *UnwindInfo, size_t BeginAddr, size_t EndAddr, size_t Rip, int *idx){
+
+  size_t EpilogSize = UnwindInfo->UnwindCode[0].CodeOffset_OffsetLowOrSize;
+
+  // if this epilogue entry is valid then unwind it if rip is within
+  if ( UnwindInfo->UnwindCode[0].OpInfo_OffsetHighOrFlags & PE_IMAGE_UWP_EPILOG_AT_THE_END ) {
+    // is rip within epilogue?
+    return EpilogSize;
+  }
+  size_t EpilogOffset;
+  // go through the list of epilogues and try to find the one
+  for ( uint32_t i = 1; i < UnwindInfo->CountOfCodes; i++ ) {
+    // did we reach epilogue codes end?
+    if ( UnwindInfo->UnwindCode[i].UnwindOp != UWOP_EPILOG ) {
+      *idx += i;
+      break;
+    }
+
+    EpilogOffset = UnwindInfo->UnwindCode[i].CodeOffset_OffsetLowOrSize + (UnwindInfo->UnwindCode[i].OpInfo_OffsetHighOrFlags << 8);
+    if ( EpilogOffset == 0 ) {
+      *idx += i;
+      // it's last code entry
+      break;
+    }
+    return EpilogOffset;
+  }
+  return EpilogSize;
+}
 
 void ResolveFunctionEntry(PVOID addr, ULONG64 ImageBase) {
   PVOID moduleBase = GetModuleHandle(NULL);
@@ -129,12 +160,16 @@ void ResolveFunctionEntry(PVOID addr, ULONG64 ImageBase) {
     for (int i = 0; i < ui->CountOfCodes; i++) {
       UNWIND_CODE uc = GetUnwindCodeEntry(ui, i);
       size_t offset = GetComputedOffsetForAllocation(&ui->UnwindCode[i], &i);
+      if(uc.UnwindOp == UWOP_EPILOG){
+        offset = GetEpilogueSize(ui, res->BeginAddress, res->EndAddress, reinterpret_cast<DWORD64>(addr), &i);
+      }
+
       printf("\t0x%02x: code-offs %x, frame-offs %x, unwind op %x, op info %x - %s (0x%x)\n",
              i,
-             uc.CodeOffset,
+             uc.CodeOffset_OffsetLowOrSize,
              uc.FrameOffset,
              uc.UnwindOp,
-             uc.OpInfo,
+             uc.OpInfo_OffsetHighOrFlags,
              GetUnwindOpNameForCode(uc.UnwindOp),
              offset
              );
@@ -142,8 +177,8 @@ void ResolveFunctionEntry(PVOID addr, ULONG64 ImageBase) {
       length = ui->SizeOfProlog;
     }
   } else {
-    data = reinterpret_cast<uint8_t *>(ImageBase + res->BeginAddress);
-    length = res->EndAddress - res->BeginAddress;
+    data = reinterpret_cast<uint8_t *>(addr);
+    length = 0x30;
   }
   DecodeAndPrint(data, length);
 
@@ -158,20 +193,22 @@ void ResolveFunctionEntry(PVOID addr, ULONG64 ImageBase) {
            res->UnwindInfoAddress);
   }
 }
+
+
 size_t GetComputedOffsetForAllocation(UNWIND_CODE codes[], int *idx) {
   UNWIND_CODE code = codes[0];
   if(code.UnwindOp == UWOP_ALLOC_SMALL){
     // Allocate a small-sized area on the stack. The size of the allocation is the operation info
     // field * 8 + 8, allowing allocations from 8 to 128 bytes.
-    return code.OpInfo * 8 + 8;
+    return code.OpInfo_OffsetHighOrFlags * 8 + 8;
   } else if(code.UnwindOp == UWOP_ALLOC_LARGE){
     // Allocate a large-sized area on the stack. There are two forms. If the operation info equals 0,
     // then the size of the allocation divided by 8 is recorded in the next slot, allowing an
     // allocation up to 512K - 8.
-    if(code.OpInfo == 0) {
+    if(code.OpInfo_OffsetHighOrFlags == 0) {
       *idx = *idx + 1;
       return codes[1].FrameOffset * 8;
-    } else if(code.OpInfo == 1){
+    } else if(code.OpInfo_OffsetHighOrFlags == 1){
       // If the operation info equals 1, then the unscaled size of the
       // allocation is recorded in the next two slots in little-endian format, allowing allocations up to 4GB - 8.
       *idx = *idx + 2;
@@ -193,6 +230,7 @@ char *GetUnwindOpNameForCode(UBYTE op) {
     case UWOP_SAVE_XMM128:return "UWOP_SAVE_XMM128";
     case UWOP_SAVE_XMM128_FAR:return "UWOP_SAVE_XMM128_FAR";
     case UWOP_PUSH_MACHFRAME:return "UWOP_PUSH_MACHFRAME";
+    case UWOP_EPILOG:return "UWOP_EPILOG";
     default:return "UWOP_UNKNOWN";
   }
 }

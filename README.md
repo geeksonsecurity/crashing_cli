@@ -108,3 +108,13 @@ Registered function table @ 00007FF716B7545C - 00007FF716B8A8B8 (0x1545c)
 Process finished normally
 Found 323 new offsets in crashing_cli.exe
 ```
+
+## UNWIND_INFO versions
+
+Windows 11 Enterprise
+Version	21H2, build	22000.438
+3584: 1: 3868549, 2: 56237
+
+Windows 10 Pro
+Version	10.0.19044 Build 19044
+3678: 1: 4290453, 2: 92231
