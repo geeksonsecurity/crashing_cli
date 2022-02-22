@@ -4,6 +4,8 @@
 #include <DbgHelp.h>
 #include <Dbgeng.h>
 #include <inttypes.h>
+#include <vector>
+#include <Zydis/Zydis.h>
 
 #pragma comment (lib, "dbgeng")
 #pragma comment(lib, "dbghelp.lib")
@@ -26,23 +28,19 @@ typedef unsigned char UBYTE;
 typedef union _UNWIND_CODE {
   struct {
     UBYTE CodeOffset;
-    UBYTE UnwindOp : 4;
-    UBYTE OpInfo   : 4;
+    UBYTE UnwindOp: 4;
+    UBYTE OpInfo: 4;
   };
   USHORT FrameOffset;
 } UNWIND_CODE, *PUNWIND_CODE;
 
-#define UNW_FLAG_EHANDLER  0x01
-#define UNW_FLAG_UHANDLER  0x02
-#define UNW_FLAG_CHAININFO 0x04
-
 typedef struct _UNWIND_INFO {
-  UBYTE Version       : 3;
-  UBYTE Flags         : 5;
+  UBYTE Version: 3;
+  UBYTE Flags: 5;
   UBYTE SizeOfProlog;
   UBYTE CountOfCodes;
-  UBYTE FrameRegister : 4;
-  UBYTE FrameOffset   : 4;
+  UBYTE FrameRegister: 4;
+  UBYTE FrameOffset: 4;
   UNWIND_CODE UnwindCode[1];
 /*  UNWIND_CODE MoreUnwindCode[((CountOfCodes + 1) & ~1) - 1];
 *   union {
@@ -52,6 +50,8 @@ typedef struct _UNWIND_INFO {
 *   OPTIONAL ULONG ExceptionData[]; */
 } UNWIND_INFO, *PUNWIND_INFO;
 
+char *GetUnwindOpNameForCode(UBYTE op);
+size_t GetComputedOffsetForAllocation(UNWIND_CODE codes[], int *p_int);
 #define GetUnwindCodeEntry(info, index) \
     ((info)->UnwindCode[index])
 
@@ -67,23 +67,133 @@ typedef struct _UNWIND_INFO {
 #define GetExceptionDataPtr(info) \
     ((PVOID)((PULONG)GetLanguageSpecificData(info) + 1))
 
+void DecodeAndPrint(ZyanU8 *data, ZyanUSize length) {
+  DWORD64 ImageBase;
+  UNWIND_HISTORY_TABLE table;
+
+  printf("[+] Decoding 0x%" PRIx64 " - 0x%" PRIx64 " (%llu bytes)\n", data, data + length, length);
+
+  // Initialize decoder context
+  ZydisDecoder decoder;
+  ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+
+  // Initialize formatter. Only required when you actually plan to do instruction
+  // formatting ("disassembling"), like we do here
+  ZydisFormatter formatter;
+  ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
+
+  // Loop over the instructions in our buffer.
+  // The runtime-address (instruction pointer) is chosen arbitrary here in order to better
+  // visualize relative addressing
+  ZyanU64 runtime_address = reinterpret_cast<uint64_t>(data);
+  ZyanUSize offset = 0;
+  ZydisDecodedInstruction instruction;
+  ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT_VISIBLE];
+  while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, data + offset, length - offset,
+                                             &instruction, operands, ZYDIS_MAX_OPERAND_COUNT_VISIBLE,
+                                             ZYDIS_DFLAG_VISIBLE_OPERANDS_ONLY))) {
+    // Print current instruction pointer.
+    printf("%016" PRIX64 "  ", runtime_address);
+
+    // Format & print the binary instruction structure to human readable format
+    char buffer[256];
+    ZydisFormatterFormatInstruction(&formatter, &instruction, operands,
+                                    instruction.operand_count_visible, buffer, sizeof(buffer), runtime_address);
+    puts(buffer);
+
+    offset += instruction.length;
+    runtime_address += instruction.length;
+  }
+}
 
 void ResolveFunctionEntry(PVOID addr, ULONG64 ImageBase) {
   PVOID moduleBase = GetModuleHandle(NULL);
+  ZyanU8 *data;
+  ZyanUSize length;
   UNWIND_HISTORY_TABLE table;
   RUNTIME_FUNCTION *res = RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(addr), &ImageBase, &table);
-  if (res != NULL) {
-    printf("\tRtlLookupFunctionEntry   (0x%" PRIx64 ") @ %p (base %p) -> 0x%lx - 0x%lx: %lx (%lx)\n", addr, res, ImageBase, res->BeginAddress, res->EndAddress, res->UnwindData, res->UnwindInfoAddress);
-    UNWIND_INFO* ui = (UNWIND_INFO*)((char*)ImageBase + res->UnwindData);
-    printf("\t\tCodes: %d\n", ui->CountOfCodes);
-    for(int i=0;i<ui->CountOfCodes; i++){
+
+  if (res != NULL) {;
+    printf("\tRtlLookupFunctionEntry   (0x%" PRIx64 ") @ %p (base %p) -> 0x%lx - 0x%lx: %lx (%lx)\n",
+           addr,
+           res,
+           ImageBase,
+           res->BeginAddress,
+           res->EndAddress,
+           res->UnwindData,
+           res->UnwindInfoAddress);
+    UNWIND_INFO *ui = (UNWIND_INFO *) ((char *) ImageBase + res->UnwindData);
+    printf("\tUnwind info at 0x%" PRIx64 "\n", ui);
+    printf("\tversion %x, flags %x, prolog %x, codes %x, frame reg %x, frame off %x\n",
+           ui->Version, ui->Flags, ui->SizeOfProlog, ui->CountOfCodes, ui->FrameRegister, ui->FrameOffset);
+    for (int i = 0; i < ui->CountOfCodes; i++) {
       UNWIND_CODE uc = GetUnwindCodeEntry(ui, i);
-      printf("\t\t\t[0x%02x] %x %x\n", i, uc.OpInfo, uc.UnwindOp);
+      size_t offset = GetComputedOffsetForAllocation(&ui->UnwindCode[i], &i);
+      printf("\t0x%02x: code-offs %x, frame-offs %x, unwind op %x, op info %x - %s (0x%x)\n",
+             i,
+             uc.CodeOffset,
+             uc.FrameOffset,
+             uc.UnwindOp,
+             uc.OpInfo,
+             GetUnwindOpNameForCode(uc.UnwindOp),
+             offset
+             );
+      data = reinterpret_cast<uint8_t *>(ImageBase + res->BeginAddress);
+      length = ui->SizeOfProlog;
     }
+  } else {
+    data = reinterpret_cast<uint8_t *>(ImageBase + res->BeginAddress);
+    length = res->EndAddress - res->BeginAddress;
   }
+  DecodeAndPrint(data, length);
+
   res = (RUNTIME_FUNCTION *) SymFunctionTableAccess64(GetCurrentProcess(), DWORD64(addr));
   if (res != NULL) {
-    printf("\tSymFunctionTableAccess64 (0x%" PRIx64 ") @ %p -> 0x%lx - 0x%lx: %lx (%lx)\n", addr, res, res->BeginAddress, res->EndAddress, res->UnwindData, res->UnwindInfoAddress);
+    printf("\tSymFunctionTableAccess64 (0x%" PRIx64 ") @ %p -> 0x%lx - 0x%lx: %lx (%lx)\n",
+           addr,
+           res,
+           res->BeginAddress,
+           res->EndAddress,
+           res->UnwindData,
+           res->UnwindInfoAddress);
+  }
+}
+size_t GetComputedOffsetForAllocation(UNWIND_CODE codes[], int *idx) {
+  UNWIND_CODE code = codes[0];
+  if(code.UnwindOp == UWOP_ALLOC_SMALL){
+    // Allocate a small-sized area on the stack. The size of the allocation is the operation info
+    // field * 8 + 8, allowing allocations from 8 to 128 bytes.
+    return code.OpInfo * 8 + 8;
+  } else if(code.UnwindOp == UWOP_ALLOC_LARGE){
+    // Allocate a large-sized area on the stack. There are two forms. If the operation info equals 0,
+    // then the size of the allocation divided by 8 is recorded in the next slot, allowing an
+    // allocation up to 512K - 8.
+    if(code.OpInfo == 0) {
+      *idx = *idx + 1;
+      return codes[1].FrameOffset * 8;
+    } else if(code.OpInfo == 1){
+      // If the operation info equals 1, then the unscaled size of the
+      // allocation is recorded in the next two slots in little-endian format, allowing allocations up to 4GB - 8.
+      *idx = *idx + 2;
+      return codes[1].FrameOffset + codes[2].FrameOffset;
+    } else {
+      return -1;
+    }
+  }
+  return -1;
+}
+char *GetUnwindOpNameForCode(UBYTE op) {
+  switch (op) {
+    case UWOP_PUSH_NONVOL:return "UWOP_PUSH_NONVOL";
+    case UWOP_ALLOC_LARGE:return "UWOP_ALLOC_LARGE";
+    case UWOP_ALLOC_SMALL:return "UWOP_ALLOC_SMALL";
+    case UWOP_SET_FPREG:return "UWOP_SET_FPREG";
+    case UWOP_SAVE_NONVOL:return "UWOP_SAVE_NONVOL";
+    case UWOP_SAVE_NONVOL_FAR:return "UWOP_SAVE_NONVOL_FAR";
+    case UWOP_SAVE_XMM128:return "UWOP_SAVE_XMM128";
+    case UWOP_SAVE_XMM128_FAR:return "UWOP_SAVE_XMM128_FAR";
+    case UWOP_PUSH_MACHFRAME:return "UWOP_PUSH_MACHFRAME";
+    default:return "UWOP_UNKNOWN";
   }
 }
 
@@ -128,11 +238,11 @@ void PrintCallStack(void) {
       break;
     }
 
-    DWORD64  dwDisplacement = 0;
-    DWORD64  dwAddress = stack.AddrPC.Offset;
+    DWORD64 dwDisplacement = 0;
+    DWORD64 dwAddress = stack.AddrPC.Offset;
 
     char buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR)];
-    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
+    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO) buffer;
 
     pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
     pSymbol->MaxNameLen = MAX_SYM_NAME;
@@ -140,14 +250,37 @@ void PrintCallStack(void) {
     BOOL symbolResolved = SymFromAddr(process, dwAddress, &dwDisplacement, pSymbol);
     printf
         (
-            "%02lu: IP: 0x%" PRIx64 " (%s) RET: 0x%" PRIx64 " \n",
+            "%02lu: IP: 0x%" PRIx64 " (%s) RET: 0x%" PRIx64 " RSP: 0x%" PRIx64 "  \n",
             frame,
             stack.AddrPC.Offset,
             symbolResolved ? pSymbol->Name : "n.a.",
-            stack.AddrReturn.Offset
+            stack.AddrReturn.Offset,
+            stack.AddrStack.Offset
         );
     ResolveFunctionEntry((PVOID) stack.AddrPC.Offset, pSymbol->ModBase);
 
+  }
+}
+
+void GetCallstackUnwind() {
+  UINT64 ImageBase;
+  PRUNTIME_FUNCTION pFunction;
+  UINT64 establisherFrame;
+  PVOID handlerData;
+  CONTEXT context = {0};
+  context.ContextFlags = CONTEXT_ALL;
+  bool res = GetThreadContext(GetCurrentThread(), &context);
+  while (context.Rip != 0) {
+    pFunction = RtlLookupFunctionEntry(context.Rip, &ImageBase, NULL);
+    if (pFunction == NULL) {
+      context.Rip = *(PUINT64) context.Rsp;
+      context.Rsp += sizeof(PUINT64);
+    } else {
+      establisherFrame = 0;
+      handlerData = NULL;
+      RtlVirtualUnwind(0, ImageBase, context.Rip, pFunction, &context, &handlerData, &establisherFrame, NULL);
+    }
+    printf("RSP: 0x%" PRIx64 " - RIP 0x%" PRIx64 "\n");
   }
 }
 
@@ -167,15 +300,37 @@ void GetCallstack(DWORD tid) {
 
   HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, false, tid);
 
-  CONTEXT lpContext = {0};
-  bool res = GetThreadContext(hThread, &lpContext);
-  control4->GetStackTrace(lpContext.Rsp, lpContext.Rbp, lpContext.Rip, &frames[0], 10, &filled);
+  CONTEXT Context = {0};
+  Context.ContextFlags = CONTEXT_ALL;
+  bool res = GetThreadContext(hThread, &Context);
+
+  ULONG filledFrames = 1024;
+  std::vector<DEBUG_STACK_FRAME> dbgFrames(filledFrames);
+  auto hres = control4->GetContextStackTrace(
+      &Context,
+      sizeof(Context),
+      &dbgFrames[0],
+      filledFrames,
+      NULL,
+      filledFrames * sizeof(Context),
+      sizeof(Context),
+      &filledFrames);
   return;
 }
 
 void Func3() {
+  DWORD64 ImageBase;
+  UNWIND_HISTORY_TABLE table;
   printf("%s: %p\n", __FUNCTION__, _ReturnAddress());
   PrintCallStack();
+  //GetCallstackUnwind();
+  //GetCallstack(GetCurrentThreadId());
+  //CONTEXT context = {0};
+  //context.ContextFlags = CONTEXT_ALL;
+  //GetThreadContext(GetCurrentThread(), &context);
+  //printf("IP: %p\n", context.Rip);
+  //DecodeAndPrint(context.Rip);
+
   fflush(stdout);
   //__fastfail(1338);
   //__debugbreak();
