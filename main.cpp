@@ -8,7 +8,7 @@
 #include <Zydis/Zydis.h>
 #include <psapi.h>
 
-#define PE_IMAGE_UWP_EPILOG_AT_THE_END		1
+#define PE_IMAGE_UWP_EPILOG_AT_THE_END        1
 
 #pragma comment (lib, "dbgeng")
 #pragma comment(lib, "dbghelp.lib")
@@ -71,7 +71,7 @@ size_t GetComputedOffsetForAllocation(UNWIND_CODE codes[], int *p_int);
 #define GetExceptionDataPtr(info) \
     ((PVOID)((PULONG)GetLanguageSpecificData(info) + 1))
 
-void hexdump(const void *mem, unsigned int len, const char* title="", int show_base=1){
+void hexdump(const void *mem, unsigned int len, const char *title = "", int show_base = 1) {
   // `title` will be printed at the beginning of the dump
   // If `show_base` is true, the address of `mem` will be printed at the beginning of each line
 
@@ -79,45 +79,44 @@ void hexdump(const void *mem, unsigned int len, const char* title="", int show_b
 
   unsigned int i, j;
 
-  if(title && strcmp(title, "") != 0){
+  if (title && strcmp(title, "") != 0) {
     printf("%s:\n", title);
   }
 
-  for(i = 0; i < len + ((len % HEXDUMP_COLS) ? (HEXDUMP_COLS - len % HEXDUMP_COLS) : 0); i++)
-  {
+  for (i = 0; i < len + ((len % HEXDUMP_COLS) ? (HEXDUMP_COLS - len % HEXDUMP_COLS) : 0); i++) {
     // print (base +) offset
-    if(i % HEXDUMP_COLS == 0){
-      if(show_base){
+    if (i % HEXDUMP_COLS == 0) {
+      if (show_base) {
         printf("%p + ", mem);
       }
       printf("0x%06x: ", i);
     }
 
     // print hex data
-    if(i % 8 == 0){
+    if (i % 8 == 0) {
       putchar(' ');
     }
-    if(i < len){
-      printf("%02x ", 0xFF & ((char*)mem)[i]);
-    }else{
+    if (i < len) {
+      printf("%02x ", 0xFF & ((char *) mem)[i]);
+    } else {
       // end of block, just aligning for ASCII dump
       printf("   ");
     }
 
     // print ASCII dump
-    if(i % HEXDUMP_COLS == (HEXDUMP_COLS - 1)){
-      for(j = i - (HEXDUMP_COLS - 1); j <= i; j++){
-        if(j % 8 == 0){
+    if (i % HEXDUMP_COLS == (HEXDUMP_COLS - 1)) {
+      for (j = i - (HEXDUMP_COLS - 1); j <= i; j++) {
+        if (j % 8 == 0) {
           putchar(' ');
         }
 
-        if(j >= len){
+        if (j >= len) {
           // end of block, not really printing
           putchar(' ');
-        }else if(isprint(((char*)mem)[j])){
+        } else if (isprint(((char *) mem)[j])) {
           // printable char
-          putchar(0xFF & ((char*)mem)[j]);
-        }else{
+          putchar(0xFF & ((char *) mem)[j]);
+        } else {
           // other char
           putchar('.');
         }
@@ -165,26 +164,27 @@ void DecodeAndPrint(ZyanU8 *data, ZyanUSize length) {
     runtime_address += instruction.length;
   }
 }
-size_t GetEpilogueSize(UNWIND_INFO *UnwindInfo, size_t BeginAddr, size_t EndAddr, size_t Rip, int *idx){
+size_t GetEpilogueSize(UNWIND_INFO *UnwindInfo, size_t BeginAddr, size_t EndAddr, size_t Rip, int *idx) {
 
   size_t EpilogSize = UnwindInfo->UnwindCode[0].CodeOffset_OffsetLowOrSize;
 
   // if this epilogue entry is valid then unwind it if rip is within
-  if ( UnwindInfo->UnwindCode[0].OpInfo_OffsetHighOrFlags & PE_IMAGE_UWP_EPILOG_AT_THE_END ) {
+  if (UnwindInfo->UnwindCode[0].OpInfo_OffsetHighOrFlags & PE_IMAGE_UWP_EPILOG_AT_THE_END) {
     // is rip within epilogue?
     return EpilogSize;
   }
   size_t EpilogOffset;
   // go through the list of epilogues and try to find the one
-  for ( uint32_t i = 1; i < UnwindInfo->CountOfCodes; i++ ) {
+  for (uint32_t i = 1; i < UnwindInfo->CountOfCodes; i++) {
     // did we reach epilogue codes end?
-    if ( UnwindInfo->UnwindCode[i].UnwindOp != UWOP_EPILOG ) {
+    if (UnwindInfo->UnwindCode[i].UnwindOp != UWOP_EPILOG) {
       *idx += i;
       break;
     }
 
-    EpilogOffset = UnwindInfo->UnwindCode[i].CodeOffset_OffsetLowOrSize + (UnwindInfo->UnwindCode[i].OpInfo_OffsetHighOrFlags << 8);
-    if ( EpilogOffset == 0 ) {
+    EpilogOffset = UnwindInfo->UnwindCode[i].CodeOffset_OffsetLowOrSize
+        + (UnwindInfo->UnwindCode[i].OpInfo_OffsetHighOrFlags << 8);
+    if (EpilogOffset == 0) {
       *idx += i;
       // it's last code entry
       break;
@@ -201,7 +201,7 @@ void ResolveFunctionEntry(PVOID addr, ULONG64 ImageBase) {
   UNWIND_HISTORY_TABLE table;
   RUNTIME_FUNCTION *res = RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(addr), &ImageBase, &table);
 
-  if (res != NULL) {;
+  if (res != NULL) {
     printf("\tRtlLookupFunctionEntry   (0x%" PRIx64 ") @ %p (base %p) -> 0x%lx - 0x%lx: %lx (%lx)\n",
            addr,
            res,
@@ -217,7 +217,7 @@ void ResolveFunctionEntry(PVOID addr, ULONG64 ImageBase) {
     for (int i = 0; i < ui->CountOfCodes; i++) {
       UNWIND_CODE uc = GetUnwindCodeEntry(ui, i);
       size_t offset = GetComputedOffsetForAllocation(&ui->UnwindCode[i], &i);
-      if(uc.UnwindOp == UWOP_EPILOG){
+      if (uc.UnwindOp == UWOP_EPILOG) {
         offset = GetEpilogueSize(ui, res->BeginAddress, res->EndAddress, reinterpret_cast<DWORD64>(addr), &i);
       }
 
@@ -229,43 +229,40 @@ void ResolveFunctionEntry(PVOID addr, ULONG64 ImageBase) {
              uc.OpInfo_OffsetHighOrFlags,
              GetUnwindOpNameForCode(uc.UnwindOp),
              offset
-             );
+      );
       data = reinterpret_cast<uint8_t *>(ImageBase + res->BeginAddress);
       length = ui->SizeOfProlog;
     }
-  } else {
-    data = reinterpret_cast<uint8_t *>(addr);
-    length = 0x30;
-  }
-  DecodeAndPrint(data, length);
 
-  res = (RUNTIME_FUNCTION *) SymFunctionTableAccess64(GetCurrentProcess(), DWORD64(addr));
-  if (res != NULL) {
-    printf("\tSymFunctionTableAccess64 (0x%" PRIx64 ") @ %p -> 0x%lx - 0x%lx: %lx (%lx)\n",
-           addr,
-           res,
-           res->BeginAddress,
-           res->EndAddress,
-           res->UnwindData,
-           res->UnwindInfoAddress);
+    res = (RUNTIME_FUNCTION *) SymFunctionTableAccess64(GetCurrentProcess(), DWORD64(addr));
+    if (res != NULL) {
+      printf("\tSymFunctionTableAccess64 (0x%" PRIx64 ") @ %p -> 0x%lx - 0x%lx: %lx (%lx)\n",
+             addr,
+             res,
+             res->BeginAddress,
+             res->EndAddress,
+             res->UnwindData,
+             res->UnwindInfoAddress);
+    }
+    // decode and print prologue
+    DecodeAndPrint(data, length);
   }
 }
 
-
 size_t GetComputedOffsetForAllocation(UNWIND_CODE codes[], int *idx) {
   UNWIND_CODE code = codes[0];
-  if(code.UnwindOp == UWOP_ALLOC_SMALL){
+  if (code.UnwindOp == UWOP_ALLOC_SMALL) {
     // Allocate a small-sized area on the stack. The size of the allocation is the operation info
     // field * 8 + 8, allowing allocations from 8 to 128 bytes.
     return code.OpInfo_OffsetHighOrFlags * 8 + 8;
-  } else if(code.UnwindOp == UWOP_ALLOC_LARGE){
+  } else if (code.UnwindOp == UWOP_ALLOC_LARGE) {
     // Allocate a large-sized area on the stack. There are two forms. If the operation info equals 0,
     // then the size of the allocation divided by 8 is recorded in the next slot, allowing an
     // allocation up to 512K - 8.
-    if(code.OpInfo_OffsetHighOrFlags == 0) {
+    if (code.OpInfo_OffsetHighOrFlags == 0) {
       *idx = *idx + 1;
       return codes[1].FrameOffset * 8;
-    } else if(code.OpInfo_OffsetHighOrFlags == 1){
+    } else if (code.OpInfo_OffsetHighOrFlags == 1) {
       // If the operation info equals 1, then the unscaled size of the
       // allocation is recorded in the next two slots in little-endian format, allowing allocations up to 4GB - 8.
       *idx = *idx + 2;
@@ -344,7 +341,7 @@ void PrintCallStack(void) {
 
     char moduleName[1024];
     DWORD64 moduleBase = SymGetModuleBase64(process, stack.AddrPC.Offset);
-    GetModuleBaseNameA(process, (HMODULE)moduleBase, &moduleName[0], 1024);
+    GetModuleBaseNameA(process, (HMODULE) moduleBase, &moduleName[0], 1024);
 
     BOOL symbolResolved = SymFromAddr(process, dwAddress, &dwDisplacement, pSymbol);
     printf
@@ -353,7 +350,7 @@ void PrintCallStack(void) {
             frame,
             stack.AddrPC.Offset,
             symbolResolved ? pSymbol->Name : "n.a.",
-            moduleName, (stack.AddrPC.Offset-moduleBase),
+            moduleName, (stack.AddrPC.Offset - moduleBase),
             stack.AddrReturn.Offset,
             stack.AddrStack.Offset
         );
@@ -395,7 +392,9 @@ void GetCallstack(DWORD tid) {
 
   debugClient->QueryInterface(__uuidof(IDebugControl4), (void **) &control4);
 
-  debugClient->AttachProcess(0, GetCurrentProcessId(), DEBUG_ATTACH_NONINVASIVE | DEBUG_ATTACH_NONINVASIVE_NO_SUSPEND);
+  debugClient->AttachProcess(0,
+                             GetCurrentProcessId(),
+                             DEBUG_ATTACH_NONINVASIVE | DEBUG_ATTACH_NONINVASIVE_NO_SUSPEND);
 
   control4->WaitForEvent(DEBUG_WAIT_DEFAULT, INFINITE);
 
