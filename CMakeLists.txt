@@ -11,5 +11,9 @@ add_subdirectory("deps/zydis")
 
 add_executable(crashing_cli main.cpp)
 
+#disable optimizations
+target_compile_options(crashing_cli PRIVATE "/Ob0")
+target_compile_options(crashing_cli PRIVATE "/Od")
+
 # Have CMake link our project executable against Zydis.
 target_link_libraries(crashing_cli PRIVATE "Zydis")

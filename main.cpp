@@ -6,6 +6,7 @@
 #include <inttypes.h>
 #include <vector>
 #include <Zydis/Zydis.h>
+#include <psapi.h>
 
 #define PE_IMAGE_UWP_EPILOG_AT_THE_END		1
 
@@ -69,6 +70,62 @@ size_t GetComputedOffsetForAllocation(UNWIND_CODE codes[], int *p_int);
 
 #define GetExceptionDataPtr(info) \
     ((PVOID)((PULONG)GetLanguageSpecificData(info) + 1))
+
+void hexdump(const void *mem, unsigned int len, const char* title="", int show_base=1){
+  // `title` will be printed at the beginning of the dump
+  // If `show_base` is true, the address of `mem` will be printed at the beginning of each line
+
+  const int HEXDUMP_COLS = 16;
+
+  unsigned int i, j;
+
+  if(title && strcmp(title, "") != 0){
+    printf("%s:\n", title);
+  }
+
+  for(i = 0; i < len + ((len % HEXDUMP_COLS) ? (HEXDUMP_COLS - len % HEXDUMP_COLS) : 0); i++)
+  {
+    // print (base +) offset
+    if(i % HEXDUMP_COLS == 0){
+      if(show_base){
+        printf("%p + ", mem);
+      }
+      printf("0x%06x: ", i);
+    }
+
+    // print hex data
+    if(i % 8 == 0){
+      putchar(' ');
+    }
+    if(i < len){
+      printf("%02x ", 0xFF & ((char*)mem)[i]);
+    }else{
+      // end of block, just aligning for ASCII dump
+      printf("   ");
+    }
+
+    // print ASCII dump
+    if(i % HEXDUMP_COLS == (HEXDUMP_COLS - 1)){
+      for(j = i - (HEXDUMP_COLS - 1); j <= i; j++){
+        if(j % 8 == 0){
+          putchar(' ');
+        }
+
+        if(j >= len){
+          // end of block, not really printing
+          putchar(' ');
+        }else if(isprint(((char*)mem)[j])){
+          // printable char
+          putchar(0xFF & ((char*)mem)[j]);
+        }else{
+          // other char
+          putchar('.');
+        }
+      }
+      putchar('\n');
+    }
+  }
+}
 
 void DecodeAndPrint(ZyanU8 *data, ZyanUSize length) {
   DWORD64 ImageBase;
@@ -285,17 +342,23 @@ void PrintCallStack(void) {
     pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
     pSymbol->MaxNameLen = MAX_SYM_NAME;
 
+    char moduleName[1024];
+    DWORD64 moduleBase = SymGetModuleBase64(process, stack.AddrPC.Offset);
+    GetModuleBaseNameA(process, (HMODULE)moduleBase, &moduleName[0], 1024);
+
     BOOL symbolResolved = SymFromAddr(process, dwAddress, &dwDisplacement, pSymbol);
     printf
         (
-            "%02lu: IP: 0x%" PRIx64 " (%s) RET: 0x%" PRIx64 " RSP: 0x%" PRIx64 "  \n",
+            "%02lu: IP: 0x%" PRIx64 " - %s - %s + 0x%x RET: 0x%" PRIx64 " RSP: 0x%" PRIx64 "  \n",
             frame,
             stack.AddrPC.Offset,
             symbolResolved ? pSymbol->Name : "n.a.",
+            moduleName, (stack.AddrPC.Offset-moduleBase),
             stack.AddrReturn.Offset,
             stack.AddrStack.Offset
         );
-    ResolveFunctionEntry((PVOID) stack.AddrPC.Offset, pSymbol->ModBase);
+    //hexdump(reinterpret_cast<void*>(stack.AddrStack.Offset), 0x40, "RSP", 1);
+    //ResolveFunctionEntry((PVOID) stack.AddrPC.Offset, pSymbol->ModBase);
 
   }
 }
