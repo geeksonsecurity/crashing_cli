@@ -358,7 +358,7 @@ void PrintCallStack(void) {
             stack.AddrStack.Offset
         );
     //hexdump(reinterpret_cast<void*>(stack.AddrStack.Offset), 0x40, "RSP", 1);
-    //ResolveFunctionEntry((PVOID) stack.AddrPC.Offset, pSymbol->ModBase);
+    ResolveFunctionEntry((PVOID) stack.AddrPC.Offset, pSymbol->ModBase);
 
   }
 }
